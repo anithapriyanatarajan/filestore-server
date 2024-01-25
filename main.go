@@ -35,7 +35,7 @@ func main() {
 
 	// Start the server
 	port := 8080
-	fmt.Printf("Server is running on http://localhost:%d\n", port)
+	fmt.Printf("Server is running on http://127.0.0.1:%d\n", port)
 	err = http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
 	if err != nil {
 		fmt.Println("Error starting server:", err)
@@ -43,6 +43,7 @@ func main() {
 }
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Hit Upload Handler")
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
@@ -56,8 +57,9 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get the file from the form data
-	file, handler, err := r.FormFile("file")
+	file, handler, err := r.FormFile("myFile")
 	if err != nil {
+		fmt.Println(err)
 		http.Error(w, "Error retrieving file from form", http.StatusBadRequest)
 		return
 	}
