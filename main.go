@@ -58,6 +58,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get the file from the form data
 	file, handler, err := r.FormFile("myFile")
+	print(err)
 	if err != nil {
 		fmt.Println(err)
 		http.Error(w, "Error retrieving file from form", http.StatusBadRequest)
@@ -205,6 +206,6 @@ func listFiles(directory string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	fmt.Printf("%T\n", files)
 	return files, nil
 }
