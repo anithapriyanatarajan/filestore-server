@@ -1,4 +1,4 @@
 # filestore-server
 FileStore server achitecture
 
-![filestoresystem drawio](https://github.com/anithapriyanatarajan/filestore-server/assets/51791012/b65ba7ed-2deb-4163-b112-b087564042a6)
+![DeploymentArchitetcure drawio](https://github.com/anithapriyanatarajan/filestore-server/assets/51791012/c811bcb9-6973-4cfa-bd38-3632f0915745)
