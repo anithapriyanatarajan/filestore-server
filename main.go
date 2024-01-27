@@ -113,7 +113,6 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Store the hash value in JSON file
 	hash := r.FormValue("hash")
-	fmt.Printf("ireached %s\n", hash)
 	// Write the metadata (filename and hash) to the file
 	metadatainfo := FileHash{FileName: handler.Filename, Hash: hash}
 	err = appendDataToFile(metadatainfo, jsonFilePath)
