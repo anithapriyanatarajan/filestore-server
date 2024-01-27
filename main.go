@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,14 +32,6 @@ func init() {
 		return
 	}
 
-	metadatafile, err := os.OpenFile(jsonFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
-	}
-	defer metadatafile.Close()
-
-	// Load existing file hashes from JSON file
 	loadFileHashes()
 }
 
@@ -115,23 +105,22 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dst.Close()
 
-	// Generate hash for file content
-	hash, err := generateFileHash(file)
-	if err != nil {
-		http.Error(w, "Error generating file hash", http.StatusInternalServerError)
-		return
-	}
-
-	// Store the hash value in JSON file
-	fileHash := FileHash{FileName: filePath, Hash: hash}
-	updateFileHashes(fileHash)
-
 	_, err = io.Copy(dst, file)
 	if err != nil {
 		http.Error(w, "Error copying file to server", http.StatusInternalServerError)
 		return
 	}
 
+	// Store the hash value in JSON file
+	hash := r.FormValue("hash")
+	fmt.Printf("ireached %s\n", hash)
+	// Write the metadata (filename and hash) to the file
+	metadatainfo := FileHash{FileName: handler.Filename, Hash: hash}
+	err = appendDataToFile(metadatainfo, jsonFilePath)
+	if err != nil {
+		http.Error(w, "Unable to write metadata to file", http.StatusInternalServerError)
+		return
+	}
 	fmt.Fprintf(w, "File '%s' uploaded successfully.", handler.Filename)
 }
 
@@ -153,6 +142,31 @@ func listHandler(w http.ResponseWriter, r *http.Request) {
 	for _, file := range files {
 		fmt.Fprintln(w, file)
 	}
+}
+
+func listFiles(directory string) ([]string, error) {
+	var files []string
+
+	err := filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			// Exclude directories from the list
+			relativePath, err := filepath.Rel(uploadDirectory, path)
+			if err != nil {
+				return err
+			}
+			files = append(files, relativePath)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("%T\n", files)
+	return files, nil
 }
 
 func updateHandler(w http.ResponseWriter, r *http.Request) {
@@ -215,85 +229,75 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "File '%s' deleted successfully.", fileName)
 }
 
-func listFiles(directory string) ([]string, error) {
-	var files []string
+// =====================================
+func writeJSONToFile(data interface{}, filePath string) error {
+	fmt.Println("WriteData")
+	//fileHashesMutex.Lock()
+	//defer fileHashesMutex.Unlock()
+	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
-	err := filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			// Exclude directories from the list
-			relativePath, err := filepath.Rel(uploadDirectory, path)
-			if err != nil {
-				return err
-			}
-			files = append(files, relativePath)
-		}
-		return nil
-	})
+	fmt.Println(data)
+	encoder := json.NewEncoder(file)
+	err = encoder.Encode(data)
+	if err != nil {
+		return err
+	}
 
+	fmt.Println("Data written to", filePath)
+	return nil
+}
+
+func appendDataToFile(newData FileHash, filePath string) error {
+	fmt.Println("InsideappenData")
+	// Read existing data from the JSON file
+	existingData, err := readExistingData(filePath)
+	if err != nil {
+		return err
+	}
+
+	// Append the new data
+	existingData = append(existingData, newData)
+
+	// Write the updated data back to the JSON file
+	err = writeJSONToFile(existingData, filePath)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func readExistingData(filePath string) ([]FileHash, error) {
+	fmt.Println("ReadExistingData")
+	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("%T\n", files)
-	return files, nil
+	defer file.Close()
+
+	var existingData []FileHash
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&existingData)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	fmt.Println(existingData)
+	return existingData, nil
 }
 
-func generateFileHash(file io.Reader) (string, error) {
-	fmt.Println("Attemting to generate hash")
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	hashInBytes := hash.Sum(nil)
-	return hex.EncodeToString(hashInBytes), nil
-}
-
-func updateFileHashes(newFileHash FileHash) {
-	fmt.Println("Attemting to update hash")
-	fileHashesMutex.Lock()
-	defer fileHashesMutex.Unlock()
-
-	// Check if the file already exists in the hashes
-	for i, fh := range fileHashes {
-		if fh.FileName == newFileHash.FileName {
-			// Update the hash for an existing file
-			fileHashes[i].Hash = newFileHash.Hash
-			saveFileHashes()
-			return
-		}
-	}
-
-	// Add a new file hash
-	fileHashes = append(fileHashes, newFileHash)
-	saveFileHashes()
-}
-
-func saveFileHashes() {
-	fileHashesMutex.Lock()
-	defer fileHashesMutex.Unlock()
-
-	// Save file hashes to JSON file
-	data, err := json.MarshalIndent(fileHashes, "", "  ")
-	if err != nil {
-		fmt.Println("Error marshalling file hashes:", err)
-		return
-	}
-
-	err = os.WriteFile(jsonFilePath, data, 0644)
-	if err != nil {
-		fmt.Println("Error writing to JSON file:", err)
-		return
-	}
-}
+//=====================================
 
 func loadFileHashes() {
+	fmt.Println("accessingloadfileHashes")
 	fileHashesMutex.Lock()
 	defer fileHashesMutex.Unlock()
 
-	// Load file hashes from JSON file
-	file, err := os.Open(jsonFilePath)
+	// Append the metadata to a file
+	file, err := os.OpenFile(jsonFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Println("Error opening JSON file:", err)
 		return
@@ -305,14 +309,13 @@ func loadFileHashes() {
 		fmt.Println("Error getting file info:", err)
 		return
 	}
-
+	fmt.Println(fileInfo.Size())
 	if !(fileInfo.Size() == 0) {
 		data, err := os.ReadFile(jsonFilePath)
 		if err != nil {
 			fmt.Println("Error reading JSON file:", err)
 			return
 		}
-
 		err = json.Unmarshal(data, &fileHashes)
 		if err != nil {
 			fmt.Println("Error unmarshalling file hashes:", err)
@@ -325,7 +328,7 @@ func findMatchingFileHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse request parameters
 	r.ParseForm()
 	hashToCompare := r.Form.Get("hash")
-
+	fmt.Println(hashToCompare)
 	// Find the matching file for the given hash
 	matchingFileName, err := findMatchingFile(hashToCompare)
 	if err != nil {
@@ -335,6 +338,7 @@ func findMatchingFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Return the matching file name as JSON response
 	response := map[string]string{"matchingFileName": matchingFileName}
+	fmt.Println(response)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -342,15 +346,18 @@ func findMatchingFileHandler(w http.ResponseWriter, r *http.Request) {
 func findMatchingFile(hashToCompare string) (string, error) {
 	fileHashesMutex.Lock()
 	defer fileHashesMutex.Unlock()
-
+	fmt.Printf("Inside FUNCTION: %v", hashToCompare)
 	// Look for a file with a matching hash in the JSON file
+	fmt.Printf("%T\n", fileHashes)
+	fmt.Printf("%v\n", fileHashes)
+	fmt.Println(len(fileHashes))
 	for _, fh := range fileHashes {
+		fmt.Println(fh.Hash)
 		if fh.Hash == hashToCompare {
 			return fh.FileName, nil
 		}
 	}
-
-	return "", fmt.Errorf("no matching file found in JSON")
+	return "unmatched", nil
 }
 
 func copyFileHandler(w http.ResponseWriter, r *http.Request) {
