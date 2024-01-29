@@ -1,7 +1,7 @@
 # filestore-server
 Includes code artefacts to launch a simple filestore HTTP server.
 
-![DeploymentArchitetcure.drawio.png]docs/DeploymentArchitetcure.drawio.png
+![DeploymentArchitetcure drawio](https://github.com/anithapriyanatarajan/filestore-server/assets/51791012/62313b21-6ed8-40e0-8221-e1b7bbafcdf0)
 
 # Notes:
 - This being a simple demo version, the http server is hardcoded to be exposed on `localhost` and port `8080`
