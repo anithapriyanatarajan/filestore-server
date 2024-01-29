@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -17,6 +19,11 @@ type FileHash struct {
 
 var fileHashes []FileHash
 var fileHashesMutex sync.Mutex
+var fileStoreMutex sync.Mutex
+
+const uploadDirectory = "./uploads"
+const filestoreMetadata = "./metadata" // Optimization with hashing technique.
+const jsonFilePath = "./metadata/fileHashes.json"
 
 func init() {
 	// Create the upload directory if it doesn't exist
@@ -26,18 +33,16 @@ func init() {
 		return
 	}
 
+	// Create metadata directory if it doesn't exist
 	err = os.MkdirAll(filestoreMetadata, 0755)
 	if err != nil {
 		fmt.Println("Error creating metadata directory:", err)
 		return
 	}
 
+	// Create json to store hash or Load eixtsing filehash
 	loadFileHashes()
 }
-
-const uploadDirectory = "./uploads"
-const filestoreMetadata = "./metadata" // Optimization with hashing technique.
-const jsonFilePath = "./metadata/fileHashes.json"
 
 func main() {
 
@@ -57,7 +62,10 @@ func main() {
 	http.HandleFunc("/delete/", deleteHandler)
 
 	// 4. Handle file updates
-	http.HandleFunc("/update/", updateHandler)
+	http.HandleFunc("/update", updateHandler)
+
+	// 5. Count words in files
+	http.HandleFunc("/wordCount", wordCountHandler)
 
 	// Start the server
 	port := 8080
@@ -76,12 +84,6 @@ func fileExists(filePath string) bool {
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	err := r.ParseMultipartForm(10 << 20) // 10 MB limit
-	if err != nil {
-		http.Error(w, "Unable to parse form", http.StatusBadRequest)
 		return
 	}
 
@@ -113,6 +115,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Store the hash value in JSON file
 	hash := r.FormValue("hash")
+
 	// Write the metadata (filename and hash) to the file
 	metadatainfo := FileHash{FileName: handler.Filename, Hash: hash}
 	err = appendDataToFile(metadatainfo, jsonFilePath)
@@ -121,6 +124,62 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fmt.Fprintf(w, "File '%s' uploaded successfully.", handler.Filename)
+}
+
+func updateHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Traversing through update function.")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	file, handler, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Error retrieving file from form", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	filePath := fmt.Sprintf("%s/%s", uploadDirectory, handler.Filename)
+	fmt.Println(filePath)
+	dst, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		http.Error(w, "Error creating file on server", http.StatusInternalServerError)
+		return
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, file)
+	if err != nil {
+		http.Error(w, "Error copying file to server", http.StatusInternalServerError)
+		return
+	}
+
+	// Store the hash value in JSON file
+	hash := r.FormValue("hash")
+
+	//remove existing hash entry for the updated file.
+	loadFileHashes()
+	for i, fh := range fileHashes {
+		if fh.FileName == handler.Filename {
+			fmt.Println(fh.FileName)
+			fileHashes = append(fileHashes[:i], fileHashes[i+1:]...)
+			err := writeJSONToFile(fileHashes, jsonFilePath)
+			if err != nil {
+				http.Error(w, "Error removing hash.", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	// Write the metadata (filename and hash) to the file
+	metadatainfo := FileHash{FileName: handler.Filename, Hash: hash}
+	err = appendDataToFile(metadatainfo, jsonFilePath)
+	if err != nil {
+		http.Error(w, "Unable to write metadata to file", http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprintf(w, "File '%s' updated successfully.", handler.Filename)
 }
 
 func listHandler(w http.ResponseWriter, r *http.Request) {
@@ -164,47 +223,7 @@ func listFiles(directory string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("%T\n", files)
 	return files, nil
-}
-
-func updateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	// Extract the filename from the URL
-	fileName := r.URL.Path[len("/update/"):]
-	filePath := filepath.Join(uploadDirectory, fileName)
-
-	// If the file does not exist, create it
-	_, err := os.Stat(filePath)
-	if err != nil {
-		file, err := os.Create(filePath)
-		if err != nil {
-			http.Error(w, "Error creating file on server", http.StatusInternalServerError)
-			return
-		}
-		defer file.Close()
-	}
-
-	// Open the file for editing
-	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		http.Error(w, "Cannot Open File", http.StatusNotFound)
-		return
-	}
-	defer file.Close()
-
-	// Copy the new content from the request body to the file
-	_, err = io.Copy(file, r.Body)
-	if err != nil {
-		http.Error(w, "Error updating file", http.StatusInternalServerError)
-		return
-	}
-
-	// Respond with a success message
-	fmt.Fprintf(w, "File '%s' updated successfully.", fileName)
 }
 
 func deleteHandler(w http.ResponseWriter, r *http.Request) {
@@ -223,23 +242,30 @@ func deleteHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error deleting file", http.StatusInternalServerError)
 		return
 	}
+	loadFileHashes()
+	//remove hash entry for the deleted file.
+	for i, fh := range fileHashes {
+		if fh.FileName == fileName {
+			fileHashes = append(fileHashes[:i], fileHashes[i+1:]...)
+			err := writeJSONToFile(fileHashes, jsonFilePath)
+			if err != nil {
+				http.Error(w, "Error removing hash.", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
 
 	// Respond with a success message
 	fmt.Fprintf(w, "File '%s' deleted successfully.", fileName)
 }
 
-// =====================================
 func writeJSONToFile(data interface{}, filePath string) error {
-	fmt.Println("WriteData")
-	//fileHashesMutex.Lock()
-	//defer fileHashesMutex.Unlock()
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	fmt.Println(data)
 	encoder := json.NewEncoder(file)
 	err = encoder.Encode(data)
 	if err != nil {
@@ -251,7 +277,6 @@ func writeJSONToFile(data interface{}, filePath string) error {
 }
 
 func appendDataToFile(newData FileHash, filePath string) error {
-	fmt.Println("InsideappenData")
 	// Read existing data from the JSON file
 	existingData, err := readExistingData(filePath)
 	if err != nil {
@@ -271,7 +296,6 @@ func appendDataToFile(newData FileHash, filePath string) error {
 }
 
 func readExistingData(filePath string) ([]FileHash, error) {
-	fmt.Println("ReadExistingData")
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -284,14 +308,10 @@ func readExistingData(filePath string) ([]FileHash, error) {
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
-	fmt.Println(existingData)
 	return existingData, nil
 }
 
-//=====================================
-
 func loadFileHashes() {
-	fmt.Println("accessingloadfileHashes")
 	fileHashesMutex.Lock()
 	defer fileHashesMutex.Unlock()
 
@@ -308,7 +328,6 @@ func loadFileHashes() {
 		fmt.Println("Error getting file info:", err)
 		return
 	}
-	fmt.Println(fileInfo.Size())
 	if !(fileInfo.Size() == 0) {
 		data, err := os.ReadFile(jsonFilePath)
 		if err != nil {
@@ -327,7 +346,7 @@ func findMatchingFileHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse request parameters
 	r.ParseForm()
 	hashToCompare := r.Form.Get("hash")
-	fmt.Println(hashToCompare)
+
 	// Find the matching file for the given hash
 	matchingFileName, err := findMatchingFile(hashToCompare)
 	if err != nil {
@@ -337,23 +356,23 @@ func findMatchingFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Return the matching file name as JSON response
 	response := map[string]string{"matchingFileName": matchingFileName}
-	fmt.Println(response)
+	fmt.Printf("File with matching content identified: %s\n", matchingFileName)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
 func findMatchingFile(hashToCompare string) (string, error) {
+	loadFileHashes()
 	fileHashesMutex.Lock()
 	defer fileHashesMutex.Unlock()
-	fmt.Printf("Inside FUNCTION: %v", hashToCompare)
 	// Look for a file with a matching hash in the JSON file
-	fmt.Printf("%T\n", fileHashes)
-	fmt.Printf("%v\n", fileHashes)
-	fmt.Println(len(fileHashes))
+	matchedfilename := ""
 	for _, fh := range fileHashes {
 		fmt.Println(fh.Hash)
+		fmt.Println(hashToCompare)
 		if fh.Hash == hashToCompare {
-			return fh.FileName, nil
+			matchedfilename = fh.FileName
+			return matchedfilename, nil
 		}
 	}
 	return "unmatched", nil
@@ -362,42 +381,103 @@ func findMatchingFile(hashToCompare string) (string, error) {
 func copyFileHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse request parameters
 	r.ParseForm()
-	srcFilePath := r.Form.Get("src")
-	destFilePath := r.Form.Get("dest")
+	srcFileName := r.Form.Get("src")
+	destFileName := r.Form.Get("dest")
+	hashstring := r.Form.Get("hashstring")
 
 	// Call the copyFile function
-	err := copyFile(srcFilePath, destFilePath)
+	err := copyFile(srcFileName, destFileName, hashstring)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error copying file: %v", err), http.StatusInternalServerError)
 		return
 	}
-
 	// Respond with success message
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("File copied successfully"))
+	w.Write([]byte("File saved by duplciation at server successfully"))
 }
 
-func copyFile(srcPath, destPath string) error {
+func copyFile(srcFile string, destFile string, hashstring string) error {
+	srcPath := uploadDirectory + "/" + string(srcFile)
+	destPath := uploadDirectory + "/" + string(destFile)
+
 	// Open the source file for reading
-	srcFile, err := os.Open(srcPath)
+	src_file, err := os.Open(srcPath)
 	if err != nil {
-		return err
+		fmt.Println("Error opening JSON file:", err)
+		return nil
 	}
-	defer srcFile.Close()
+	defer src_file.Close()
 
 	// Create or open the destination file for writing
-	destFile, err := os.Create(destPath)
+	dest_file, err := os.OpenFile(destPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
-	defer destFile.Close()
+	defer dest_file.Close()
+
+	// Write the metadata (filename and hash) to the file
+	metadatainfo := FileHash{FileName: destFile, Hash: hashstring}
+	err = appendDataToFile(metadatainfo, jsonFilePath)
+	if err != nil {
+		return err
+	}
 
 	// Copy the content from the source to the destination
-	_, err = io.Copy(destFile, srcFile)
-	if err != nil {
+	_, copyerr := io.Copy(dest_file, src_file)
+	if copyerr != nil {
 		return err
 	}
 
 	fmt.Printf("File copied from %s to %s\n", srcPath, destPath)
 	return nil
+}
+
+func wordCountHandler(w http.ResponseWriter, r *http.Request) {
+	totalWords, err := countWordsInFiles()
+	if err != nil {
+		http.Error(w, "Error counting words", http.StatusInternalServerError)
+		return
+	}
+	response := map[string]int{"totalWords": totalWords}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func countWords(text string) int {
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	scanner.Split(bufio.ScanWords)
+
+	var count int
+	for scanner.Scan() {
+		count++
+	}
+
+	return count
+}
+
+func countWordsInFiles() (int, error) {
+	fileStoreMutex.Lock()
+	defer fileStoreMutex.Unlock()
+
+	var totalWords int
+
+	err := filepath.Walk(uploadDirectory, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() {
+			fileContent, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			words := countWords(string(fileContent))
+			totalWords += words
+		}
+
+		return nil
+	})
+
+	return totalWords, err
 }
