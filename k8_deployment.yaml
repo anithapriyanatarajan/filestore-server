@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: filestore-server-pv
+spec:
+  capacity:
+    storage: 1Gi  # Adjust the storage size as needed
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/"  # Replace with the path on your host machine
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: filestore-server-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi  # Request the same amount of storage as the PV
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filestore-server-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filestore-server
+  template:
+    metadata:
+      labels:
+        app: filestore-server
+    spec:
+      containers:
+      - name: filestore-server-container
+        image: filestore-server:latest  
+        ports:
+        - containerPort: 8080 
+        volumeMounts:
+        - name: filestore-server-storage
+          mountPath: /app/data  # Mount path inside the container
+
+      volumes:
+      - name: filestore-server-storage
+        persistentVolumeClaim:
+          claimName: filestore-server-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: filestore-server-service
+spec:
+  selector:
+    app: filestore-server
+  ports:
+    - protocol: TCP
+      port: 80  # The port on which the service will be accessible
+      targetPort: 8080  # The port on which the pod is listening
+  type: ClusterIP  # Use ClusterIP for internal communication, change to LoadBalancer or NodePort for external access if needed
